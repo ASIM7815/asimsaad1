@@ -35,6 +35,13 @@ wss.on('connection', (ws) => {
     
     console.log(`Client connected: ${clientId}`);
     
+    // Send ping every 30 seconds to keep connection alive
+    const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.ping();
+        }
+    }, 30000);
+    
     ws.on('message', (message) => {
         try {
             const data = JSON.parse(message);
@@ -46,6 +53,7 @@ wss.on('connection', (ws) => {
     
     ws.on('close', () => {
         console.log(`Client disconnected: ${clientId}`);
+        clearInterval(pingInterval);
         clients.delete(clientId);
         
         // Clean up rooms
@@ -53,15 +61,28 @@ wss.on('connection', (ws) => {
             if (room.initiator === clientId || room.peer === clientId) {
                 const otherClient = room.initiator === clientId ? room.peer : room.initiator;
                 if (otherClient && clients.has(otherClient)) {
-                    clients.get(otherClient).send(JSON.stringify({ type: 'call-ended' }));
+                    const otherWs = clients.get(otherClient);
+                    if (otherWs.readyState === WebSocket.OPEN) {
+                        otherWs.send(JSON.stringify({ type: 'call-ended' }));
+                    }
                 }
                 rooms.delete(roomId);
             }
         }
     });
+    
+    ws.on('error', (error) => {
+        console.error(`WebSocket error for ${clientId}:`, error);
+    });
 });
 
 function handleMessage(ws, clientId, data) {
+    // Validate WebSocket is still open before processing
+    if (ws.readyState !== WebSocket.OPEN) {
+        console.log(`WebSocket not open for client ${clientId}`);
+        return;
+    }
+    
     switch (data.type) {
         case 'create-room':
             const roomId = crypto.randomBytes(8).toString('hex');
@@ -78,10 +99,12 @@ function handleMessage(ws, clientId, data) {
             const room = rooms.get(data.roomId);
             if (room) {
                 room.peer = clientId;
-                ws.send(JSON.stringify({ type: 'peer-joined' }));
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'peer-joined' }));
+                }
                 
                 const initiatorWs = clients.get(room.initiator);
-                if (initiatorWs) {
+                if (initiatorWs && initiatorWs.readyState === WebSocket.OPEN) {
                     initiatorWs.send(JSON.stringify({ type: 'peer-joined' }));
                 }
                 console.log(`Peer joined room: ${data.roomId}`);
@@ -92,7 +115,7 @@ function handleMessage(ws, clientId, data) {
             const callRoom = rooms.get(data.roomId);
             if (callRoom && callRoom.initiator) {
                 const targetWs = clients.get(callRoom.initiator);
-                if (targetWs) {
+                if (targetWs && targetWs.readyState === WebSocket.OPEN) {
                     targetWs.send(JSON.stringify({ type: 'call-request' }));
                 }
             }
@@ -102,7 +125,7 @@ function handleMessage(ws, clientId, data) {
             const responseRoom = rooms.get(data.roomId);
             if (responseRoom && responseRoom.peer) {
                 const peerWs = clients.get(responseRoom.peer);
-                if (peerWs) {
+                if (peerWs && peerWs.readyState === WebSocket.OPEN) {
                     peerWs.send(JSON.stringify({
                         type: data.accepted ? 'call-accepted' : 'call-rejected'
                     }));
@@ -117,7 +140,7 @@ function handleMessage(ws, clientId, data) {
             if (signalingRoom) {
                 const targetId = signalingRoom.initiator === clientId ? signalingRoom.peer : signalingRoom.initiator;
                 const targetWs = clients.get(targetId);
-                if (targetWs) {
+                if (targetWs && targetWs.readyState === WebSocket.OPEN) {
                     targetWs.send(JSON.stringify(data));
                 }
             }
@@ -128,7 +151,7 @@ function handleMessage(ws, clientId, data) {
             if (endRoom) {
                 const otherId = endRoom.initiator === clientId ? endRoom.peer : endRoom.initiator;
                 const otherWs = clients.get(otherId);
-                if (otherWs) {
+                if (otherWs && otherWs.readyState === WebSocket.OPEN) {
                     otherWs.send(JSON.stringify({ type: 'call-ended' }));
                 }
             }

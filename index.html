@@ -45,6 +45,9 @@
         }
         .hidden { display: none; }
         .status { padding: 15px; background: rgba(255,255,255,0.2); border-radius: 10px; margin: 15px 0; text-align: center; font-size: 16px; }
+        .status.success { background: rgba(76, 175, 80, 0.3); }
+        .status.error { background: rgba(244, 67, 54, 0.3); }
+        .status.warning { background: rgba(255, 152, 0, 0.3); }
         .incoming-call { background: linear-gradient(135deg, #ff9800 0%, #ff5722 100%); padding: 30px; border-radius: 20px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
         .error-toast { position: fixed; top: 20px; right: 20px; padding: 15px 25px; border-radius: 10px; color: white; font-weight: bold; z-index: 9999; animation: slideIn 0.3s; }
         .error-toast.error { background: linear-gradient(135deg, #f44336, #e91e63); }
@@ -122,13 +125,30 @@
         let html5QrCode;
         let isInitiator = false;
         let remoteRoomId;
+        let pendingIceCandidates = [];
 
         const config = {
             iceServers: [
-                { urls: 'stun:YOUR_SERVER_IP:3478' }
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
             ],
             iceCandidatePoolSize: 10
         };
+
+        function showStatus(message, type = 'info') {
+            const statusEl = document.getElementById('callStatus');
+            statusEl.textContent = message;
+            statusEl.className = 'status';
+            if (type !== 'info') statusEl.classList.add(type);
+        }
+
+        function sendMessage(data) {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify(data));
+            } else {
+                showStatus('Connection lost. Please refresh.', 'error');
+            }
+        }
 
         function connectWebSocket() {
             ws = new WebSocket(`wss://${window.location.host}`);
@@ -156,7 +176,7 @@
                         startCall();
                         break;
                     case 'call-rejected':
-                        alert('Call was rejected');
+                        showStatus('Call was rejected', 'error');
                         document.getElementById('callBtn').classList.remove('hidden');
                         break;
                     case 'offer':
@@ -170,7 +190,7 @@
                         break;
                     case 'call-ended':
                         endCall();
-                        alert('Call ended by peer');
+                        showStatus('Call ended by peer', 'warning');
                         break;
                 }
             };
@@ -181,11 +201,11 @@
 
         function generateQR() {
             if (!ws || ws.readyState !== WebSocket.OPEN) {
-                alert('Connecting to server... Please wait and try again.');
+                showStatus('Connecting to server... Please wait.', 'warning');
                 return;
             }
             isInitiator = true;
-            ws.send(JSON.stringify({ type: 'create-room' }));
+            sendMessage({ type: 'create-room' });
         }
 
         function showQRCode() {
@@ -238,10 +258,15 @@
         }
 
         function joinRoom(room) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                showStatus('Connecting... Please wait.', 'warning');
+                setTimeout(() => joinRoom(room), 1000);
+                return;
+            }
             remoteRoomId = room;
-            ws.send(JSON.stringify({ type: 'join-room', roomId: room }));
+            sendMessage({ type: 'join-room', roomId: room });
             document.getElementById('callSection').classList.remove('hidden');
-            document.getElementById('callStatus').textContent = 'Connected to room. Waiting...';
+            showStatus('Connected to room. Waiting...');
         }
 
         function showIncomingCall() {
@@ -250,18 +275,18 @@
 
         function acceptCall() {
             document.getElementById('incomingCallSection').classList.add('hidden');
-            ws.send(JSON.stringify({ type: 'call-response', accepted: true, roomId }));
+            sendMessage({ type: 'call-response', accepted: true, roomId });
             startCall();
         }
 
         function rejectCall() {
             document.getElementById('incomingCallSection').classList.add('hidden');
-            ws.send(JSON.stringify({ type: 'call-response', accepted: false, roomId }));
+            sendMessage({ type: 'call-response', accepted: false, roomId });
         }
 
         function initiateCall() {
             document.getElementById('callBtn').classList.add('hidden');
-            ws.send(JSON.stringify({ type: 'call-request', roomId: remoteRoomId }));
+            sendMessage({ type: 'call-request', roomId: remoteRoomId });
         }
 
         async function startCall() {
@@ -290,21 +315,24 @@
                     if (remoteVideo.srcObject !== event.streams[0]) {
                         remoteVideo.srcObject = event.streams[0];
                     }
-                    document.getElementById('callStatus').textContent = 'Call connected';
+                    showStatus('Call connected', 'success');
                 };
                 
                 peerConnection.onicecandidate = (event) => {
-                    if (event.candidate) {
-                        ws.send(JSON.stringify({
+                    if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                        sendMessage({
                             type: 'ice-candidate',
                             candidate: event.candidate,
                             roomId: roomId || remoteRoomId
-                        }));
+                        });
                     }
                 };
                 
                 peerConnection.onconnectionstatechange = () => {
-                    if (peerConnection.connectionState === 'failed') {
+                    if (peerConnection.connectionState === 'connected') {
+                        showStatus('Call connected', 'success');
+                    } else if (peerConnection.connectionState === 'failed') {
+                        showStatus('Connection failed', 'error');
                         ErrorHandler.handleConnectionError();
                     }
                 };
@@ -315,9 +343,10 @@
                         offerToReceiveVideo: true
                     });
                     await peerConnection.setLocalDescription(offer);
-                    ws.send(JSON.stringify({ type: 'offer', offer: offer, roomId: remoteRoomId }));
+                    sendMessage({ type: 'offer', offer: offer, roomId: remoteRoomId });
                 }
             } catch (error) {
+                showStatus('Media access failed', 'error');
                 ErrorHandler.handleMediaError(error);
             }
         }
@@ -326,22 +355,49 @@
             if (!peerConnection) await startCall();
             await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
             
+            // Process pending ICE candidates
+            while (pendingIceCandidates.length > 0) {
+                const candidate = pendingIceCandidates.shift();
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (error) {
+                    console.error('Error adding pending ICE candidate:', error);
+                }
+            }
+            
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
-            ws.send(JSON.stringify({ type: 'answer', answer: answer, roomId }));
+            sendMessage({ type: 'answer', answer: answer, roomId });
         }
 
         async function handleAnswer(answer) {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            
+            // Process pending ICE candidates
+            while (pendingIceCandidates.length > 0) {
+                const candidate = pendingIceCandidates.shift();
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (error) {
+                    console.error('Error adding pending ICE candidate:', error);
+                }
+            }
         }
 
         async function handleIceCandidate(candidate) {
-            if (peerConnection && peerConnection.remoteDescription) {
+            if (!peerConnection) {
+                console.log('Peer connection not ready, queuing ICE candidate');
+                return;
+            }
+            
+            if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
                 try {
                     await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
                 } catch (error) {
                     console.error('Error adding ICE candidate:', error);
                 }
+            } else {
+                pendingIceCandidates.push(candidate);
             }
         }
 
@@ -351,36 +407,48 @@
                 peerConnection = null;
             }
             if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
+                localStream.getTracks().forEach(track => {
+                    track.stop();
+                    track.enabled = false;
+                });
                 localStream = null;
             }
-            document.getElementById('localVideo').srcObject = null;
-            document.getElementById('remoteVideo').srcObject = null;
+            
+            const localVideo = document.getElementById('localVideo');
+            const remoteVideo = document.getElementById('remoteVideo');
+            localVideo.srcObject = null;
+            remoteVideo.srcObject = null;
+            
             document.getElementById('endCallBtn').classList.add('hidden');
-            document.getElementById('callStatus').textContent = 'Call ended';
+            showStatus('Call ended');
             
             if (roomId || remoteRoomId) {
-                ws.send(JSON.stringify({ type: 'end-call', roomId: roomId || remoteRoomId }));
+                sendMessage({ type: 'end-call', roomId: roomId || remoteRoomId });
             }
+            
+            pendingIceCandidates = [];
         }
 
         async function requestPermissions() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                stream.getTracks().forEach(track => track.stop());
+                stream.getTracks().forEach(track => {
+                    track.stop();
+                    track.enabled = false;
+                });
                 document.getElementById('permissionBtn').textContent = '✓ Permissions Granted';
                 document.getElementById('permissionBtn').disabled = true;
-                alert('Camera and microphone access granted! You can now use video calling.');
+                showStatus('Camera and microphone access granted!', 'success');
             } catch (error) {
                 console.error('Permission denied:', error);
-                alert('Camera and microphone access is required for video calls. Please allow permissions.');
+                showStatus('Permission denied. Please allow camera and microphone access.', 'error');
             }
         }
 
         window.onload = () => {
             connectWebSocket();
             const room = new URLSearchParams(window.location.search).get('room');
-            if (room) setTimeout(() => joinRoom(room), 1000);
+            if (room) setTimeout(() => joinRoom(room), 2000);
         };
     </script>
 </body>
