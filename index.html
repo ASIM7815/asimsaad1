@@ -11,6 +11,7 @@
     <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <script src="error-handler.js"></script>
     <style>
+        
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; min-height: 100vh; }
         .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
@@ -55,6 +56,14 @@
 <body>
     <div class="container">
         <h1> Video Call - QR Connect</h1>
+        
+        <div id="permissionSection" class="section">
+            <h2>🎥 Enable Camera & Microphone</h2>
+            <p style="text-align: center; margin-bottom: 20px;">Allow access to start video calling</p>
+            <div style="text-align: center;">
+                <button id="permissionBtn" onclick="requestPermissions()">Allow Camera & Microphone</button>
+            </div>
+        </div>
         
         <div id="setupSection" class="section">
             <h2>Step 1: Generate Your QR Code</h2>
@@ -352,6 +361,19 @@
             
             if (roomId || remoteRoomId) {
                 ws.send(JSON.stringify({ type: 'end-call', roomId: roomId || remoteRoomId }));
+            }
+        }
+
+        async function requestPermissions() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                stream.getTracks().forEach(track => track.stop());
+                document.getElementById('permissionBtn').textContent = '✓ Permissions Granted';
+                document.getElementById('permissionBtn').disabled = true;
+                alert('Camera and microphone access granted! You can now use video calling.');
+            } catch (error) {
+                console.error('Permission denied:', error);
+                alert('Camera and microphone access is required for video calls. Please allow permissions.');
             }
         }
 
