@@ -131,7 +131,25 @@
         const config = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
+                { urls: 'stun:stun1.l.google.com:19302' },
+                { urls: 'stun:stun2.l.google.com:19302' },
+                { urls: 'stun:stun3.l.google.com:19302' },
+                { urls: 'stun:stun4.l.google.com:19302' },
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                }
             ],
             iceCandidatePoolSize: 10
         };
@@ -329,7 +347,20 @@
                     }
                 };
                 
+                peerConnection.oniceconnectionstatechange = () => {
+                    console.log('ICE connection state:', peerConnection.iceConnectionState);
+                    if (peerConnection.iceConnectionState === 'failed') {
+                        showStatus('Connection failed. Retrying...', 'error');
+                        peerConnection.restartIce();
+                    } else if (peerConnection.iceConnectionState === 'disconnected') {
+                        showStatus('Connection lost. Reconnecting...', 'warning');
+                    } else if (peerConnection.iceConnectionState === 'connected') {
+                        showStatus('Call connected', 'success');
+                    }
+                };
+                
                 peerConnection.onconnectionstatechange = () => {
+                    console.log('Connection state:', peerConnection.connectionState);
                     if (peerConnection.connectionState === 'connected') {
                         showStatus('Call connected', 'success');
                     } else if (peerConnection.connectionState === 'failed') {
